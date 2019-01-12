@@ -31,6 +31,7 @@ public class HdfsWriter extends Writer {
         private String fieldDelimiter;
         private String compress;
         private String encoding;
+        private Integer splitLine;
         private HashSet<String> tmpFiles = new HashSet<String>();//临时文件全路径
         private HashSet<String> endFiles = new HashSet<String>();//最终文件全路径
 
@@ -55,6 +56,7 @@ public class HdfsWriter extends Writer {
                 String message = "HdfsWriter插件目前只支持ORC和TEXT两种格式的文件,请将filetype选项的值配置为ORC或者TEXT";
                 throw DataXException.asDataXException(HdfsWriterErrorCode.ILLEGAL_VALUE, message);
             }
+            this.splitLine = this.writerSliceConfig.getInt(Key.SPLIT_LINE);
             //path
             this.path = this.writerSliceConfig.getNecessaryValue(Key.PATH, HdfsWriterErrorCode.REQUIRED_VALUE);
             if(!path.startsWith("/")){
@@ -81,7 +83,7 @@ public class HdfsWriter extends Writer {
             //writeMode check
             this.writeMode = this.writerSliceConfig.getNecessaryValue(Key.WRITE_MODE, HdfsWriterErrorCode.REQUIRED_VALUE);
             writeMode = writeMode.toLowerCase().trim();
-            Set<String> supportedWriteModes = Sets.newHashSet("append", "nonconflict");
+            Set<String> supportedWriteModes = Sets.newHashSet("append", "nonconflict","truncate");
             if (!supportedWriteModes.contains(writeMode)) {
                 throw DataXException.asDataXException(HdfsWriterErrorCode.ILLEGAL_VALUE,
                         String.format("仅支持append, nonConflict两种模式, 不支持您配置的 writeMode 模式 : [%s]",
@@ -148,6 +150,9 @@ public class HdfsWriter extends Writer {
         @Override
         public void prepare() {
             //若路径已经存在，检查path是否是目录
+            if (!hdfsHelper.isPathexists(path)){
+                hdfsHelper.mkdirs(path);
+            }
             if(hdfsHelper.isPathexists(path)){
                 if(!hdfsHelper.isPathDir(path)){
                     throw DataXException.asDataXException(HdfsWriterErrorCode.ILLEGAL_VALUE,
@@ -160,13 +165,11 @@ public class HdfsWriter extends Writer {
                 if(existFilePaths.length > 0){
                     isExistFile = true;
                 }
-                /**
                  if ("truncate".equals(writeMode) && isExistFile ) {
                  LOG.info(String.format("由于您配置了writeMode truncate, 开始清理 [%s] 下面以 [%s] 开头的内容",
                  path, fileName));
                  hdfsHelper.deleteFiles(existFilePaths);
                  } else
-                 */
                 if ("append".equalsIgnoreCase(writeMode)) {
                     LOG.info(String.format("由于您配置了writeMode append, 写入前不做清理工作, [%s] 目录下写入相应文件名前缀  [%s] 的文件",
                             path, fileName));
@@ -188,7 +191,12 @@ public class HdfsWriter extends Writer {
 
         @Override
         public void post() {
-            hdfsHelper.renameFile(tmpFiles, endFiles);
+        	if(null!=splitLine){
+        		hdfsHelper.renameDirFile(tmpFiles, endFiles, true);
+        	}else{
+        		hdfsHelper.renameDirFile(tmpFiles, endFiles, false);
+        	}
+            //hdfsHelper.renameFile(tmpFiles, endFiles);
         }
 
         @Override

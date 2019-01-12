@@ -8,6 +8,8 @@ public enum SupportHiveDataType {
     FLOAT,
     DOUBLE,
 
+    LONG,
+
     TIMESTAMP,
     DATE,
 

@@ -23,6 +23,8 @@ public class Key {
     public static final String FIELD_DELIMITER = "fieldDelimiter";
     // not must, default UTF-8
     public static final String ENCODING = "encoding";
+    //not must
+    public static final String SPLIT_LINE ="splitLine";
     // not must, default no compress
     public static final String COMPRESS = "compress";
     // not must, not default \N

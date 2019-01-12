@@ -9,6 +9,7 @@ import com.alibaba.datax.common.util.Configuration;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.google.common.collect.Lists;
+import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.MutablePair;
 import org.apache.hadoop.fs.*;
@@ -132,7 +133,7 @@ public  class HdfsHelper {
     public Path[] hdfsDirList(String dir,String fileName){
         Path path = new Path(dir);
         Path[] files = null;
-        String filterFileName = fileName + "__*";
+        String filterFileName = fileName;
         try {
             PathFilter pathFilter = new GlobFilter(filterFileName);
             FileStatus[] status = fileSystem.listStatus(path,pathFilter);
@@ -148,6 +149,24 @@ public  class HdfsHelper {
         }
         return files;
     }
+
+    public boolean mkdirs(String filePath) {
+        Path path = new Path(filePath);
+        boolean exist = false;
+        try {
+            exist = fileSystem.mkdirs(path);
+            String message = String.format("创建该文件路径[%s]",
+                    "filePath =" + filePath);
+            LOG.info(message);
+        } catch (IOException e) {
+            String message = String.format("创建文件路径[%s]是否存在时发生网络IO异常,请检查您的网络是否正常！",
+                    "message:filePath =" + filePath);
+            LOG.error(message);
+            throw DataXException.asDataXException(HdfsWriterErrorCode.CONNECT_HDFS_IO_ERROR, e);
+        }
+        return exist;
+    }
+
 
     public boolean isPathexists(String filePath) {
         Path path = new Path(filePath);
@@ -244,6 +263,78 @@ public  class HdfsHelper {
             }
         }
     }
+    
+    public void renameDirFile(HashSet<String> tmpFiles, HashSet<String> endFiles,boolean isSplitFile){
+    	Path srcFilePath = null;
+    	if(tmpFiles.size() != endFiles.size()){
+            String message = String.format("临时目录下文件名个数与目标文件名个数不一致!");
+            LOG.error(message);
+            throw DataXException.asDataXException(HdfsWriterErrorCode.HDFS_RENAME_FILE_ERROR, message);
+        }else{
+        	try {
+        		for (Iterator it1=tmpFiles.iterator(),it2=endFiles.iterator();it1.hasNext()&&it2.hasNext();){
+        			String srcFileTemp = it1.next().toString();
+                    String dstFileTemp = it2.next().toString();
+                    srcFilePath = new Path(srcFileTemp).getParent();
+                    String endDir = new Path(dstFileTemp).getParent().toString();
+                    endDir = buildFilePath(endDir);
+            		List<String> tempFileList = Arrays.asList(hdfsDirList(new Path(srcFileTemp).getParent().toString()));
+            		for (String srcFile : tempFileList) {
+            			Path tempFilePath = new Path(srcFile);
+            			
+            			String sourceFileName =tempFilePath.getName(); 
+            			String targetFileName = sourceFileName;
+            			if(isSplitFile){
+            				String splitFileName = sourceFileName.substring(0, sourceFileName.lastIndexOf("__"));
+            				targetFileName= splitFileName.substring(0, splitFileName.lastIndexOf("__"))+sourceFileName.substring(sourceFileName.lastIndexOf("__"));
+            			}else{
+            				targetFileName =sourceFileName.substring(0, sourceFileName.lastIndexOf("__"));
+            			}
+            			String dstFile = String.format("%s%s", endDir,targetFileName);
+            			 LOG.info(String.format("start rename file [%s] to file [%s].", srcFile,dstFile));
+            			 Path dstFilePath = new Path(dstFile);
+                         boolean renameTag = fileSystem.rename(tempFilePath,dstFilePath);
+                         if(!renameTag){
+                             String message = String.format("重命名文件[%s]失败,请检查您的网络是否正常！", srcFile);
+                             LOG.error(message);
+                             throw DataXException.asDataXException(HdfsWriterErrorCode.HDFS_RENAME_FILE_ERROR, message);
+                         }
+                         LOG.info(String.format("finish rename file [%s] to file [%s].", srcFile,dstFile));
+        			}
+        		}
+    		} catch (Exception e) {
+    			String message = String.format("重命名文件时发生异常,请检查您的网络是否正常！");
+                LOG.error(message);
+                throw DataXException.asDataXException(HdfsWriterErrorCode.CONNECT_HDFS_IO_ERROR, e);
+    		}finally{
+    			deleteDir(srcFilePath);
+    		}
+        }
+    	
+    	
+    }
+
+
+    private String buildFilePath(String path) {
+        boolean isEndWithSeparator = false;
+        switch (IOUtils.DIR_SEPARATOR) {
+            case IOUtils.DIR_SEPARATOR_UNIX:
+                isEndWithSeparator = path.endsWith(String
+                        .valueOf(IOUtils.DIR_SEPARATOR));
+                break;
+            case IOUtils.DIR_SEPARATOR_WINDOWS:
+                isEndWithSeparator = path.endsWith(String
+                        .valueOf(IOUtils.DIR_SEPARATOR_WINDOWS));
+                break;
+            default:
+                break;
+        }
+        if (!isEndWithSeparator) {
+            path = path + IOUtils.DIR_SEPARATOR;
+        }
+        return path;
+    }
+
 
     //关闭FileSystem
     public void closeFileSystem(){
@@ -284,10 +375,16 @@ public  class HdfsHelper {
         char fieldDelimiter = config.getChar(Key.FIELD_DELIMITER);
         List<Configuration>  columns = config.getListConfiguration(Key.COLUMN);
         String compress = config.getString(Key.COMPRESS,null);
+        Integer splitLine = config.getInt(Key.SPLIT_LINE);
+       
 
         SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMddHHmm");
         String attempt = "attempt_"+dateFormat.format(new Date())+"_0001_m_000000_0";
         Path outputPath = new Path(fileName);
+        int fileNum =1;
+        if(null!=splitLine){
+        	outputPath = new Path(fileName+"__"+fileNum);
+        }
         //todo 需要进一步确定TASK_ATTEMPT_ID
         conf.set(JobContext.TASK_ATTEMPT_ID, attempt);
         FileOutputFormat outFormat = new TextOutputFormat();
@@ -299,6 +396,7 @@ public  class HdfsHelper {
                 outFormat.setOutputCompressorClass(conf, codecClass);
             }
         }
+        int lineCount =1;
         try {
             RecordWriter writer = outFormat.getRecordWriter(fileSystem, conf, outputPath.toString(), Reporter.NULL);
             Record record = null;
@@ -306,6 +404,18 @@ public  class HdfsHelper {
                 MutablePair<Text, Boolean> transportResult = transportOneRecord(record, fieldDelimiter, columns, taskPluginCollector);
                 if (!transportResult.getRight()) {
                     writer.write(NullWritable.get(),transportResult.getLeft());
+                }
+                if(null!=splitLine){
+                	if(lineCount==splitLine){
+                		 writer.close(Reporter.NULL);
+                		 fileNum++;
+                		 outputPath = new Path(fileName+"__"+fileNum);
+                		 outFormat.setOutputPath(conf, outputPath);
+                	     outFormat.setWorkOutputPath(conf, outputPath);
+                	     writer = outFormat.getRecordWriter(fileSystem, conf, outputPath.toString(), Reporter.NULL);
+                	     lineCount=1;
+                	}
+                	lineCount++;
                 }
             }
             writer.close(Reporter.NULL);
@@ -425,6 +535,7 @@ public  class HdfsHelper {
                     objectInspector = ObjectInspectorFactory.getReflectionObjectInspector(Integer.class, ObjectInspectorFactory.ObjectInspectorOptions.JAVA);
                     break;
                 case BIGINT:
+                case LONG:
                     objectInspector = ObjectInspectorFactory.getReflectionObjectInspector(Long.class, ObjectInspectorFactory.ObjectInspectorOptions.JAVA);
                     break;
                 case FLOAT:
@@ -507,6 +618,7 @@ public  class HdfsHelper {
                                 recordList.add(Integer.valueOf(rowData));
                                 break;
                             case BIGINT:
+                            case LONG:
                                 recordList.add(column.asLong());
                                 break;
                             case FLOAT:
