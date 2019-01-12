@@ -105,6 +105,7 @@ HdfsWriter提供向HDFS文件系统指定路径中写入TEXTFile文件和ORCFile
                         "fileType": "orc",
                         "path": "/user/hive/warehouse/writerorc.db/orcfull",
                         "fileName": "xxxx",
+                        "splitLine":"5000000",
                         "column": [
                             {
                                 "name": "col1",
